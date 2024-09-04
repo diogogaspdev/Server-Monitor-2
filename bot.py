@@ -12,14 +12,14 @@ import os
 import platform
 import random
 import sys
+import tracemalloc
 
-import aiosqlite
+tracemalloc.start()
+
 import discord
 from discord.ext import commands, tasks
 from discord.ext.commands import Context
 from dotenv import load_dotenv
-
-from database import DatabaseManager
 
 if not os.path.isfile(f"{os.path.realpath(os.path.dirname(__file__))}/config.json"):
     sys.exit("'config.json' not found! Please add it and try again.")
@@ -69,6 +69,7 @@ It is recommended to use slash commands and therefore not use prefix commands.
 If you want to use prefix commands, make sure to also enable the intent below in the Discord developer portal.
 """
 intents.message_content = True
+
 
 # Setup both of the loggers
 
@@ -141,16 +142,6 @@ class DiscordBot(commands.Bot):
         self.config = config
         self.database = None
 
-    async def init_db(self) -> None:
-        async with aiosqlite.connect(
-            f"{os.path.realpath(os.path.dirname(__file__))}/database/database.db"
-        ) as db:
-            with open(
-                f"{os.path.realpath(os.path.dirname(__file__))}/database/schema.sql"
-            ) as file:
-                await db.executescript(file.read())
-            await db.commit()
-
     async def load_cogs(self) -> None:
         """
         The code in this function is executed whenever the bot will start.
@@ -167,15 +158,14 @@ class DiscordBot(commands.Bot):
                         f"Failed to load extension {extension}\n{exception}"
                     )
 
-        await self.tree.sync()
-
     @tasks.loop(minutes=1.0)
     async def status_task(self) -> None:
         """
         Setup the game status task of the bot.
         """
-        statuses = ["with you!", "with Krypton!", "with humans!"]
-        await self.change_presence(activity=discord.Game(random.choice(statuses)))
+        statuses = ["your server!", "your base!", "YOU!"]
+        await self.change_presence(
+            activity=discord.Activity(type=discord.ActivityType.watching, name=random.choice(statuses)))
 
     @status_task.before_loop
     async def before_status_task(self) -> None:
@@ -195,14 +185,9 @@ class DiscordBot(commands.Bot):
             f"Running on: {platform.system()} {platform.release()} ({os.name})"
         )
         self.logger.info("-------------------")
-        await self.init_db()
         await self.load_cogs()
+        await self.tree.sync()
         self.status_task.start()
-        self.database = DatabaseManager(
-            connection=await aiosqlite.connect(
-                f"{os.path.realpath(os.path.dirname(__file__))}/database/database.db"
-            )
-        )
 
     async def on_message(self, message: discord.Message) -> None:
         """
@@ -264,16 +249,16 @@ class DiscordBot(commands.Bot):
         elif isinstance(error, commands.MissingPermissions):
             embed = discord.Embed(
                 description="You are missing the permission(s) `"
-                + ", ".join(error.missing_permissions)
-                + "` to execute this command!",
+                            + ", ".join(error.missing_permissions)
+                            + "` to execute this command!",
                 color=0xE02B2B,
             )
             await context.send(embed=embed)
         elif isinstance(error, commands.BotMissingPermissions):
             embed = discord.Embed(
                 description="I am missing the permission(s) `"
-                + ", ".join(error.missing_permissions)
-                + "` to fully perform this command!",
+                            + ", ".join(error.missing_permissions)
+                            + "` to fully perform this command!",
                 color=0xE02B2B,
             )
             await context.send(embed=embed)
