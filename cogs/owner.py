@@ -85,7 +85,7 @@ class Owner(commands.Cog, name="owner"):
         )
         await context.send(embed=embed)
 
-    @commands.hybrid_command(
+    @commands.command(
         name="load",
         description="Load a cog",
     )
@@ -111,7 +111,7 @@ class Owner(commands.Cog, name="owner"):
         )
         await context.send(embed=embed)
 
-    @commands.hybrid_command(
+    @commands.command(
         name="unload",
         description="Unloads a cog.",
     )
@@ -137,7 +137,7 @@ class Owner(commands.Cog, name="owner"):
         )
         await context.send(embed=embed)
 
-    @commands.hybrid_command(
+    @commands.command(
         name="reload",
         description="Reloads a cog.",
     )
@@ -163,7 +163,7 @@ class Owner(commands.Cog, name="owner"):
         )
         await context.send(embed=embed)
 
-    @commands.hybrid_command(
+    @commands.command(
         name="shutdown",
         description="Make the bot shutdown.",
     )
@@ -178,7 +178,7 @@ class Owner(commands.Cog, name="owner"):
         await context.send(embed=embed)
         await self.bot.close()
 
-    @commands.hybrid_command(
+    @commands.command(
         name="say",
         description="The bot will say anything you want.",
     )
@@ -193,7 +193,7 @@ class Owner(commands.Cog, name="owner"):
         """
         await context.send(message)
 
-    @commands.hybrid_command(
+    @commands.command(
         name="embed",
         description="The bot will say anything you want, but within embeds.",
     )
@@ -206,8 +206,139 @@ class Owner(commands.Cog, name="owner"):
         :param context: The hybrid command context.
         :param message: The message that should be repeated by the bot.
         """
-        embed = my_embed.MyEmbed()
+        embed = self.bot.embed.copy_new()
+
         embed.description = message
+        await context.send(embed=embed)
+
+    @commands.command(
+        name="add_premium",
+        description="Adds a server to the premium list.",
+    )
+    @app_commands.describe(message="Adds a server to the premium list")
+    @commands.is_owner()
+    async def add_premium(self, context: Context, guild_id: int) -> None:
+        """
+        Adds a server to the premium list.
+
+        :param context: The command context.
+        :param guild_id: Guild ID to be added.
+        """
+
+        pool = self.bot.pool
+
+        async with pool.acquire() as con:
+            await con.execute("""
+                INSERT INTO guilds (guild_id)
+                VALUES ($1)
+                ON CONFLICT (guild_id) DO UPDATE
+                SET premium = True, allowed = True
+            """, guild_id)
+
+            await con.close()
+
+        embed = self.bot.embed.copy_new()
+
+        embed.title = "Premium"
+        embed.description = f"Premium added for guild {guild_id}"
+
+        await context.send(embed=embed)
+
+    @commands.command(
+        name="remove_premium",
+        description="Removes a server from the premium list.",
+    )
+    @app_commands.describe(message="Removes a server from the premium list")
+    @commands.is_owner()
+    async def remove_premium(self, context: Context, guild_id: int) -> None:
+        """
+        Removes a server from the premium list.
+
+        :param context: The command context.
+        :param guild_id: Guild ID to be removed.
+        """
+
+        pool = self.bot.pool
+
+        async with pool.acquire() as con:
+            await con.execute("""
+                UPDATE guilds
+                SET premium=false
+                WHERE guild_id=$1
+            """, guild_id)
+
+            await con.close()
+
+        embed = self.bot.embed.copy_new()
+
+        embed.title = "Premium"
+        embed.description = f"Premium removed for guild {guild_id}"
+
+        await context.send(embed=embed)
+
+    @commands.command(
+        name="add_allowed",
+        description="Allows a server.",
+    )
+    @app_commands.describe(message="Allows a server")
+    @commands.is_owner()
+    async def add_allowed(self, context: Context, guild_id: int) -> None:
+        """
+        Allows a server.
+
+        :param context: The command context.
+        :param guild_id: Guild ID to be added.
+        """
+
+        pool = self.bot.pool
+
+        async with pool.acquire() as con:
+            await con.execute("""
+                INSERT INTO guilds (guild_id)
+                VALUES ($1)
+                ON CONFLICT (guild_id) DO UPDATE
+                SET allowed = True
+            """, guild_id)
+
+            await con.close()
+
+        embed = self.bot.embed.copy_new()
+
+        embed.title = "Premium"
+        embed.description = f"Premium added for guild {guild_id}"
+
+        await context.send(embed=embed)
+
+    @commands.command(
+        name="remove_allowed",
+        description="Disallows a server.",
+    )
+    @app_commands.describe(message="Disallows a server")
+    @commands.is_owner()
+    async def remove_allowed(self, context: Context, guild_id: int) -> None:
+        """
+        Disallows a server.
+
+        :param context: The command context.
+        :param guild_id: Guild ID to be disallowed.
+        """
+
+        pool = self.bot.pool
+
+        async with pool.acquire() as con:
+            await con.execute("""
+                UPDATE guilds
+                SET premium=false, allowed=false
+                WHERE guild_id=$1
+            """, guild_id)
+
+            await con.close()
+
+        embed = self.bot.embed.copy_new()
+
+        embed.title = "Premium"
+        embed.description = f"Guild disallowed {guild_id}"
+
         await context.send(embed=embed)
 
 

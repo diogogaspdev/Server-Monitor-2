@@ -47,14 +47,17 @@ class EOS:
     async def ticket(self, server, room_id=None):
 
         if not room_id:
-            conn = await DbConnector().setup()
+            pool = await DbConnector().setup()
 
-            data = await conn.fetchrow("""
-                SELECT ROOM_ID
-                FROM ARK_SERVERS
-                WHERE ARK_SERVER = $1
-                AND ROOM_ID <> 0
-            """, server)
+            async with pool.acquire() as con:
+                data = await con.fetchrow("""
+                    SELECT ROOM_ID
+                    FROM ARK_SERVERS
+                    WHERE ARK_SERVER = $1
+                    AND ROOM_ID <> 0
+                """, server)
+
+                await con.close()
 
             if data:
                 room_id = data['room_id']
@@ -92,7 +95,10 @@ class EOS:
 
     async def players(self, server, room_id=None):
 
-        uri, ticket, puid = await self.ticket(server, room_id)
+        try:
+            uri, ticket, puid = await self.ticket(server, room_id)
+        except IndexError as e:
+            return [], server
 
         first_message = {
             "type": "join",
@@ -151,40 +157,43 @@ class EOS:
 
         data = json.loads(data)
 
-        conn = await DbConnector().setup()
+        pool = await DbConnector().setup()
 
         players_info = []
 
-        for users in data['productUsers'].items():
-            puid = users[0]
+        async with pool.acquire() as con:
+            for users in data['productUsers'].items():
+                puid = users[0]
 
-            for account in users[1]['accounts']:
-                data = await conn.fetchrow("""
-                    SELECT PUID
-                    FROM PLAYERS
-                    WHERE PUID = $1
-                    AND ACCOUNT_ID = $2
-                    AND PROVIDER = $3
-                """, puid, account['accountId'], account['identityProviderId'])
-
-                if not data:
-                    await conn.execute("""
-                        INSERT INTO
-                            PLAYERS (PUID, ACCOUNT_ID, PROVIDER)
-                        VALUES
-                            ($1, $2, $3);
+                for account in users[1]['accounts']:
+                    data = await con.fetchrow("""
+                        SELECT PUID
+                        FROM PLAYERS
+                        WHERE PUID = $1
+                        AND ACCOUNT_ID = $2
+                        AND PROVIDER = $3
                     """, puid, account['accountId'], account['identityProviderId'])
 
-                players_info.append({
-                    "puid": puid,
-                    "display_name": account['displayName'],
-                    "account": account['accountId'],
-                    "platform": account['identityProviderId']
-                })
+                    if not data:
+                        await con.execute("""
+                            INSERT INTO
+                                PLAYERS (PUID, ACCOUNT_ID, PROVIDER)
+                            VALUES
+                                ($1, $2, $3);
+                        """, puid, account['accountId'], account['identityProviderId'])
+
+                    players_info.append({
+                        "puid": puid,
+                        "display_name": account['displayName'],
+                        "account": account['accountId'],
+                        "platform": account['identityProviderId']
+                    })
+
+            await con.close()
 
         return players_info
 
-    async def matchmaking(self, server_number, official: bool):
+    async def matchmaking(self, server_number, official: bool = True, token=None):
 
         url = f"{self.api_url}/matchmaking/v1/{self.deployment_id}/filter"
 
@@ -209,7 +218,8 @@ class EOS:
             "maxResults": 2
         }
 
-        token = await self.get_token()
+        if not token:
+            token = await self.get_token()
 
         headers = {
             "Accept": "application/json",
@@ -227,7 +237,7 @@ class EOS:
             if 'ENABLEDMODSFILEIDS_s' not in session['attributes']:
                 return session
 
-        raise Exception(f"Failed to find session {server_number}")
+        return []
 
     async def matchmaking_all(self):
 
@@ -268,7 +278,7 @@ class EOS:
 
         sessions.sort(key=lambda session: session['totalPlayers'], reverse=True)
 
-        conn = await DbConnector().setup()
+        pool = await DbConnector().setup()
 
         local_dt = datetime.now()
 
@@ -292,48 +302,56 @@ class EOS:
 
             seen.append(session['id'])
 
-        await conn.executemany("""
-            INSERT INTO server_history(
-            ARK_SERVER, PLAYER_COUNT, TIME)
-            VALUES ($1, $2, $3);
-        """, results)
+        async with pool.acquire() as con:
+            await con.executemany("""
+                INSERT INTO server_history(
+                ARK_SERVER, PLAYER_COUNT, TIME)
+                VALUES ($1, $2, $3)
+                ON CONFLICT (ARK_SERVER, TIME) DO NOTHING;
+            """, results)
+
+            await con.close()
 
     async def players_all(self):
-        conn = await DbConnector().setup()
+        pool = await DbConnector().setup()
 
-        data = await conn.fetch("""
-            SELECT ROOM_ID, ARK_SERVER
-                FROM ark_servers 
-            WHERE ROOM_ID <> 0
-        """)
+        async with pool.acquire() as con:
+            data = await con.fetch("""
+                SELECT ROOM_ID, ARK_SERVER
+                    FROM ark_servers 
+                WHERE ROOM_ID <> 0
+            """)
 
-        if data:
-            results = await asyncio.gather(*[self.players(server['ark_server'], server['room_id']) for server in data])
-        else:
-            return
+            if data:
+                results = await asyncio.gather(
+                    *[self.players(server['ark_server'], server['room_id']) for server in data])
+            else:
+                return
 
-        local_dt = datetime.now()
+            local_dt = datetime.now()
 
-        local_tz = timezone('Brazil/East')
+            local_tz = timezone('Brazil/East')
 
-        local_dt_with_tz = local_dt.astimezone(local_tz)
+            local_dt_with_tz = local_dt.astimezone(local_tz)
 
-        utc_dt = local_dt_with_tz.astimezone(utc)
+            utc_dt = local_dt_with_tz.astimezone(utc)
 
-        epoch_time = utc_dt.timestamp()
+            epoch_time = utc_dt.timestamp()
 
-        upload = []
+            upload = []
 
-        for result in results:
-            for player in result[0]:
-                upload.append((
-                    player,
-                    result[1],
-                    epoch_time
-                ))
+            for result in results:
+                for player in result[0]:
+                    upload.append((
+                        player,
+                        result[1],
+                        epoch_time
+                    ))
 
-        await conn.executemany("""
-            INSERT INTO player_history(
-            puid, ark_server, "time")
-            VALUES ($1, $2, $3)
-        """, upload)
+            await con.executemany("""
+                INSERT INTO player_history(
+                puid, ark_server, "time")
+                VALUES ($1, $2, $3)
+            """, upload)
+
+            await con.close()

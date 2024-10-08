@@ -14,12 +14,16 @@ import random
 import sys
 import tracemalloc
 
+from tools.my_embed import MyEmbed
+
 tracemalloc.start()
 
 import discord
 from discord.ext import commands, tasks
 from discord.ext.commands import Context
 from dotenv import load_dotenv
+from tools.db_connector import DbConnector
+from monitors import *
 
 if not os.path.isfile(f"{os.path.realpath(os.path.dirname(__file__))}/config.json"):
     sys.exit("'config.json' not found! Please add it and try again.")
@@ -140,7 +144,9 @@ class DiscordBot(commands.Bot):
         """
         self.logger = logger
         self.config = config
-        self.database = None
+        self.pool = None
+        self.monitor_tasks = []
+        self.embed = None
 
     async def load_cogs(self) -> None:
         """
@@ -161,7 +167,7 @@ class DiscordBot(commands.Bot):
     @tasks.loop(minutes=1.0)
     async def status_task(self) -> None:
         """
-        Setup the game status task of the bot.
+        Set up the game status task of the bot.
         """
         statuses = ["your server!", "your base!", "YOU!"]
         await self.change_presence(
@@ -172,6 +178,47 @@ class DiscordBot(commands.Bot):
         """
         Before starting the status changing task, we make sure the bot is ready
         """
+        await self.wait_until_ready()
+
+    @tasks.loop(minutes=30)
+    async def cleaner(self) -> None:
+        indexes_to_remove = []
+
+        for index, task in enumerate(self.monitor_tasks):
+            if not task.is_running():
+                indexes_to_remove.append(index)
+
+        for index in sorted(indexes_to_remove, reverse=True):
+            self.logger.info(f"Cleaned task {self.monitor_tasks[index]}")
+            self.monitor_tasks.pop(index)
+
+        self.embed = MyEmbed()
+        await self.embed.setup_standard(self.pool)
+
+        async with self.pool.acquire() as con:
+            for task in self.monitor_tasks:
+                monitor_type = 0
+
+                if isinstance(task, hub.Hub):
+                    monitor_type = 5
+                elif isinstance(task, basic.BasicMonitor):
+                    monitor_type = 2
+                elif isinstance(task, basic.BasicChannel):
+                    monitor_type = 1
+
+                if monitor_type > 0:
+                    data = await con.fetchrow("""
+                        SELECT type 
+                        FROM monitors
+                        WHERE channel_id = $1
+                        AND type = $2
+                    """, task.channel_id, monitor_type)
+
+                    if not data:
+                        task.stop()
+
+    @cleaner.before_loop
+    async def before_cleaner(self) -> None:
         await self.wait_until_ready()
 
     async def setup_hook(self) -> None:
@@ -185,9 +232,16 @@ class DiscordBot(commands.Bot):
             f"Running on: {platform.system()} {platform.release()} ({os.name})"
         )
         self.logger.info("-------------------")
+        self.pool = await DbConnector().setup()
+        self.logger.info("Connected to database")
+        self.logger.info("-------------------")
         await self.load_cogs()
+        self.logger.info("-------------------")
         await self.tree.sync()
+        self.logger.info("Tree synced")
+        self.logger.info("-------------------")
         self.status_task.start()
+        self.cleaner.start()
 
     async def on_message(self, message: discord.Message) -> None:
         """
@@ -272,6 +326,23 @@ class DiscordBot(commands.Bot):
             await context.send(embed=embed)
         else:
             raise error
+
+    async def on_guild_join(self, guild: discord.Guild):
+        pool = self.pool
+
+        async with pool.acquire() as con:
+            await con.execute("""
+                INSERT INTO guilds (guild_id)
+                VALUES ($1)
+                ON CONFLICT (guild_id) DO NOTHING
+            """, guild.id)
+
+            await con.close()
+
+        self.logger.info(f"Joined guild: {guild.name} {guild.id}")
+
+    async def on_guild_remove(self, guild: discord.Guild):
+        self.logger.info(f"Left guild: {guild.name} {guild.id}")
 
 
 load_dotenv()

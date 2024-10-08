@@ -1,1 +1,1 @@
-__all__ = ('eos', 'my_embed', 'db_connector')
+__all__ = ('eos', 'my_embed', 'db_connector', 'checks', 'exceptions')
